@@ -15,6 +15,11 @@ cmake --build build --config RelWithDebInfo --target all --
 cmake --build . --config %build_type% --target ALL_BUILD -- -m
 ```
 
+On Linux, GCC 9 (Ubuntu 20.04's default) cannot build the vendored deps: GMP 6.2.1's
+`configure` fails a compiler probe under GCC 9 with `error: parameter name omitted`
+across every ABI, aborting with "could not find a working compiler". Use GCC 12+
+(`CC=gcc-12 CXX=g++-12 ./build_linux.sh -dst`, matching the project's Ubuntu 24.04 CI).
+
 ## Testing
 
 Catch2 framework. Tests in `tests/`; see [tests/AGENTS.md](tests/AGENTS.md) for where a new test belongs and the conventions to follow.
