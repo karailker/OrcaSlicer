@@ -7,9 +7,12 @@ find_package(${CMAKE_FIND_PACKAGE_NAME} ${${CMAKE_FIND_PACKAGE_NAME}_FIND_VERSIO
 
 if (NOT ${CMAKE_FIND_PACKAGE_NAME}_FOUND)
     include(CheckIncludeFileCXX)
-    add_library(draco INTERFACE)
-    target_include_directories(draco INTERFACE include)
-    add_library(draco::draco ALIAS draco)
+    
+    if (NOT TARGET draco)
+        add_library(draco INTERFACE)
+        target_include_directories(draco INTERFACE include)
+        add_library(draco::draco ALIAS draco)
+    endif()
 
     if (_quietly)
         set(CMAKE_REQUIRED_QUIET ON)

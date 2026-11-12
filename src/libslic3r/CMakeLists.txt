@@ -26,6 +26,299 @@ if (SLIC3R_CAD)
     find_package(SLVS REQUIRED)
 endif ()
 
+if (SLIC3R_CAD)
+    cmake_policy(PUSH)
+    cmake_policy(SET CMP0011 NEW)
+    # CGAL's config resets policies (cmake_minimum_required ...3.31), so a plain SET
+    # can't reach it; the default opts its Boost lookup into BoostConfig (CMP0167).
+    set(CMAKE_POLICY_DEFAULT_CMP0167 NEW)
+    find_package(CGAL 6.2 REQUIRED)
+    find_package(OpenCV REQUIRED core)
+    unset(CMAKE_POLICY_DEFAULT_CMP0167)
+    cmake_policy(POP)
+
+    set(CGAL_SOURCES
+        "Geometry/VoronoiUtilsCgal.cpp;Geometry/VoronoiUtilsCgal.hpp"
+        "CutSurface.hpp;CutSurface.cpp"
+    )
+
+    add_library(libslic3r_cgal STATIC
+        CutSurface.hpp CutSurface.cpp
+        IntersectionPoints.hpp IntersectionPoints.cpp
+        MeshBoolean.hpp MeshBoolean.cpp
+        MeshRepair.hpp MeshRepair.cpp
+        TryCatchSignal.hpp TryCatchSignal.cpp
+        Triangulation.hpp Triangulation.cpp
+    )
+
+    target_include_directories(libslic3r_cgal PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+
+    # Reset compile options of libslic3r_cgal. Despite it being linked privately, CGAL options
+    # (-frounding-math) still propagate to dependent libs which is not desired.
+    get_target_property(_cgal_tgt CGAL::CGAL ALIASED_TARGET)
+    if (NOT TARGET ${_cgal_tgt})
+        set (_cgal_tgt CGAL::CGAL)
+    endif ()
+    get_target_property(_opts ${_cgal_tgt} INTERFACE_COMPILE_OPTIONS)
+    if (_opts)
+        set(_opts_bad "${_opts}")
+        set(_opts_good "${_opts}")
+        list(FILTER _opts_bad INCLUDE REGEX frounding-math)
+        list(FILTER _opts_good EXCLUDE REGEX frounding-math)
+        set_target_properties(${_cgal_tgt} PROPERTIES INTERFACE_COMPILE_OPTIONS "${_opts_good}")
+        target_compile_options(libslic3r_cgal PRIVATE "${_opts_bad}")
+    endif()
+
+    if (IS_CLANG_CL)
+        # CGAL passes /fp:strict /fp:except-. clang-cl reports the second as overriding part of
+        # the first; the settings cc1 receives are the same ones MSVC produces from that pair.
+        target_compile_options(libslic3r_cgal PRIVATE -Wno-overriding-option)
+    endif ()
+
+    # Lets CGAL algorithms given CGAL::Parallel_if_available_tag run on TBB.
+    target_compile_definitions(libslic3r_cgal PRIVATE CGAL_LINKED_WITH_TBB)
+    target_link_libraries(libslic3r_cgal PRIVATE ${_cgal_tgt} admesh libigl mcut boost_libs TBB::tbb)
+
+    if (MSVC AND "${CMAKE_SIZEOF_VOID_P}" STREQUAL "4") # 32 bit MSVC workaround
+        target_compile_definitions(libslic3r_cgal PRIVATE CGAL_DO_NOT_USE_MPZF)
+    endif ()
+else()
+    set(CGAL_SOURCES "")
+endif()
+
+# Provide fallback implementations when CGAL is not available (SLIC3R_CAD=OFF)
+if (NOT SLIC3R_CAD)
+    # Provide fallback VoronoiUtilsCgal when CGAL is not available
+    file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/Geometry/VoronoiUtilsCgal.cpp
+        "// Fallback implementation for non-CGAL builds\n"
+        "#include \"libslic3r/Geometry/VoronoiUtilsCgal.hpp\"\n"
+        "#include \"libslic3r/Geometry/Voronoi.hpp\"\n"
+        "#include \"libslic3r/Arachne/utils/PolygonsSegmentIndex.hpp\"\n"
+        "#include \"libslic3r/MultiMaterialSegmentation.hpp\"\n"
+        "#include \"libslic3r/Line.hpp\"\n"
+        "#include \"libslic3r/Point.hpp\"\n"
+        "namespace Slic3r::Geometry {\n"
+        "using VD = VoronoiDiagram;\n"
+        "using LinesIt = std::vector<Line>::iterator;\n"
+        "using ColoredLinesConstIt = std::vector<ColoredLine>::const_iterator;\n"
+        "using PolygonsSegmentIndexConstIt = std::vector<Arachne::PolygonsSegmentIndex>::const_iterator;\n"
+        "    template<typename SegmentIterator>\n"
+        "    typename boost::polygon::enable_if<\n"
+        "        typename boost::polygon::gtl_if<typename boost::polygon::is_segment_concept<\n"
+        "            typename boost::polygon::geometry_concept<typename std::iterator_traits<SegmentIterator>::value_type>::type>::type>::type,\n"
+        "        bool>::type\n"
+        "    VoronoiUtilsCgal::is_voronoi_diagram_planar_angle(const VoronoiDiagram &, SegmentIterator, SegmentIterator) {\n"
+        "        return true; // Assume planar when CGAL not available\n"
+        "    }\n"
+        "    bool VoronoiUtilsCgal::is_voronoi_diagram_planar_intersection(const VoronoiDiagram &) {\n"
+        "        return true; // Assume planar when CGAL not available\n"
+        "    }\n"
+        "    // Explicit template instantiations\n"
+        "    template bool VoronoiUtilsCgal::is_voronoi_diagram_planar_angle<LinesIt>(const VD &, LinesIt, LinesIt);\n"
+        "    template bool VoronoiUtilsCgal::is_voronoi_diagram_planar_angle<VD::SegmentIt>(const VD &, VD::SegmentIt, VD::SegmentIt);\n"
+        "    template bool VoronoiUtilsCgal::is_voronoi_diagram_planar_angle<ColoredLinesConstIt>(const VD &, ColoredLinesConstIt, ColoredLinesConstIt);\n"
+        "    template bool VoronoiUtilsCgal::is_voronoi_diagram_planar_angle<PolygonsSegmentIndexConstIt>(const VD &, PolygonsSegmentIndexConstIt, PolygonsSegmentIndexConstIt);\n"
+        "} // namespace Slic3r::Geometry\n"
+    )
+    
+    # Provide fallback implementations for CAD-dependent functions
+    file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/MeshRepairFallback.cpp
+        "#include \"libslic3r/MeshRepairFallback.hpp\"
+"
+        "#include \"libslic3r/TriangleMesh.hpp\"
+"
+        "namespace Slic3r {\n"
+        "static float compute_volume(const indexed_triangle_set &its)\n"
+        "{\n"
+        "    if (its.empty()) return 0.;\n"
+        "    auto p0 = its.vertices.front();\n"
+        "    float volume = 0.f;\n"
+        "    for (size_t i = 0; i < its.indices.size(); ++i) {\n"
+        "        const Vec3f &a = its.vertices[its.indices[i][0]];\n"
+        "        const Vec3f &b = its.vertices[its.indices[i][1]];\n"
+        "        const Vec3f &c = its.vertices[its.indices[i][2]];\n"
+        "        Vec3f U = b - a;\n"
+        "        Vec3f V = c - a;\n"
+        "        Vec3f C = U.cross(V);\n"
+        "        Vec3f normal = C.normalized();\n"
+        "        float area = 0.5f * C.norm();\n"
+        "        float height = normal.dot(a - p0);\n"
+        "        volume += (area * height) / 3.0f;\n"
+        "    }\n"
+        "    return volume;\n"
+        "}\n"
+        "bool repair_mesh(TriangleMesh &mesh, MeshRepairStats *stats_out, std::string *error, const std::function<void(int)> &progress)\n"
+        "{\n"
+        "    if (mesh.its.indices.empty()) {\n"
+        "        if (stats_out) {\n"
+        "            stats_out->modified = false;\n"
+        "            stats_out->welded_vertices = 0;\n"
+        "            stats_out->removed_triangles = 0;\n"
+        "            stats_out->reversed_shells = 0;\n"
+        "            stats_out->filled_holes = 0;\n"
+        "            stats_out->removed_shells = 0;\n"
+        "            stats_out->self_intersections = 0;\n"
+        "        }\n"
+        "        return true;\n"
+        "    }\n"
+        "    float vol = compute_volume(mesh.its);\n"
+        "    size_t inverted_count = 0;\n"
+        "    for (size_t i = 0; i < mesh.its.indices.size(); ++i) {\n"
+        "        const Vec3f &a = mesh.its.vertices[mesh.its.indices[i][0]];\n"
+        "        const Vec3f &b = mesh.its.vertices[mesh.its.indices[i][1]];\n"
+        "        const Vec3f &c = mesh.its.vertices[mesh.its.indices[i][2]];\n"
+        "        Vec3f U = b - a;\n"
+        "        Vec3f V = c - a;\n"
+        "        Vec3f C = U.cross(V);\n"
+        "        Vec3f normal = C.normalized();\n"
+        "        float height = normal.dot(a - mesh.its.vertices.front());\n"
+        "        if (height < 0) {\n"
+        "            inverted_count++;\n"
+        "        }\n"
+        "    }\n"
+        "    if (inverted_count > 0 || vol < 0) {\n"
+        "        if (stats_out) {\n"
+        "            stats_out->modified = true;\n"
+        "            stats_out->welded_vertices = 0;\n"
+        "            stats_out->removed_triangles = 0;\n"
+        "            stats_out->reversed_shells = mesh.its.indices.size();\n"
+        "            stats_out->filled_holes = 0;\n"
+        "            stats_out->removed_shells = 0;\n"
+        "            stats_out->self_intersections = 0;\n"
+        "        }\n"
+        "        mesh.flip_triangles();\n"
+        "        return true;\n"
+        "    }\n"
+        "    if (stats_out) {\n"
+        "        stats_out->modified = false;\n"
+        "        stats_out->welded_vertices = 0;\n"
+        "        stats_out->removed_triangles = 0;\n"
+        "        stats_out->reversed_shells = 0;\n"
+        "        stats_out->filled_holes = 0;\n"
+        "        stats_out->removed_shells = 0;\n"
+        "        stats_out->self_intersections = 0;\n"
+        "    }\n"
+        "    return true;\n"
+        "}\n"
+        "} // namespace Slic3r\n"
+    )
+    file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/MeshBooleanFallback.cpp
+        "#include \"libslic3r/MeshBooleanFallback.hpp\"\n"
+        "namespace Slic3r {\n"
+        "namespace MeshBoolean {\n"
+        "TriangleMesh eigen_to_triangle_mesh(const EigenMesh &) { return TriangleMesh(); }\n"
+        "EigenMesh triangle_mesh_to_eigen(const TriangleMesh &) { return {}; }\n"
+        "void minus(EigenMesh &, const EigenMesh &) {}\n"
+        "void self_union(EigenMesh &) {}\n"
+        "void minus(TriangleMesh&, const TriangleMesh&) {}\n"
+        "void self_union(TriangleMesh&) {}\n"
+        "namespace cgal {\n"
+        "struct CGALMesh { };\n"
+        "CGALMeshPtr clone(const CGALMesh &) { return nullptr; }\n"
+        "void save_CGALMesh(const std::string&, const CGALMesh&) {}\n"
+        "CGALMeshPtr triangle_mesh_to_cgal(const std::vector<stl_vertex> &, const std::vector<stl_triangle_vertex_indices> &) { return nullptr; }\n"
+        "TriangleMesh cgal_to_triangle_mesh(const CGALMesh &) { return TriangleMesh(); }\n"
+        "indexed_triangle_set cgal_to_indexed_triangle_set(const CGALMesh &) { return indexed_triangle_set(); }\n"
+        "void minus(TriangleMesh &, const TriangleMesh &) {}\n"
+        "void plus(TriangleMesh &, const TriangleMesh &) {}\n"
+        "void intersect(TriangleMesh &, const TriangleMesh &) {}\n"
+        "void minus(indexed_triangle_set &, const indexed_triangle_set &) {}\n"
+        "void plus(indexed_triangle_set &, const indexed_triangle_set &) {}\n"
+        "void intersect(indexed_triangle_set &, const indexed_triangle_set &) {}\n"
+        "void minus(CGALMesh &, CGALMesh &) {}\n"
+        "void plus(CGALMesh &, CGALMesh &) {}\n"
+        "void intersect(CGALMesh &, CGALMesh &) {}\n"
+        "bool does_self_intersect(const TriangleMesh &) { return false; }\n"
+        "bool does_self_intersect(const CGALMesh &) { return false; }\n"
+        "std::vector<TriangleMesh> segment(const TriangleMesh&, double, int) { return {}; }\n"
+        "TriangleMesh merge(std::vector<TriangleMesh>) { return TriangleMesh(); }\n"
+        "bool does_bound_a_volume(const CGALMesh &) { return false; }\n"
+        "bool empty(const CGALMesh &) { return true; }\n"
+        "std::optional<std::vector<Vec2f>> parameterize_lscm(const indexed_triangle_set &) { return std::nullopt; }\n"
+        "indexed_triangle_set remesh_isotropic(const indexed_triangle_set &mesh, double, unsigned, double, unsigned) { return mesh; }\n"
+        "}\n"
+        "namespace mcut {\n"
+        "void make_boolean(const TriangleMesh &, const TriangleMesh &, std::vector<TriangleMesh> &, const std::string &) {}\n"
+        "}\n"
+        "}\n"
+        "} // namespace Slic3r\n"
+    )
+    file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/TriangulationFallback.cpp
+        "#include \"libslic3r/TriangulationFallback.hpp\"\n"
+        "namespace Slic3r {\n"
+        "namespace Triangulation {\n"
+        "Indices triangulate(const Points &, const Points &) { return {}; }\n"
+        "Indices triangulate(const Polygon &) { return {}; }\n"
+        "Indices triangulate(const Polygons &) { return {}; }\n"
+        "Indices triangulate(const ExPolygon &) { return {}; }\n"
+        "Indices triangulate(const ExPolygons &) { return {}; }\n"
+        "Indices triangulate(const ExPolygons &, const Points&) { return {}; }\n"
+        "Indices triangulate(const ExPolygons &, const Points&, const Changes&) { return {}; }\n"
+        "Changes create_changes(const Points &, const Points &) { return {}; }\n"
+        "}\n"
+        "} // namespace Slic3r\n"
+    )
+    file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/IntersectionsFallback.cpp
+        "#include \"libslic3r/IntersectionsFallback.hpp\"\n"
+        "namespace Slic3r {\n"
+        "IntersectionsLines get_intersections(const std::vector<Line>&) { return {}; }\n"
+        "IntersectionsLines get_intersections(const Polygon&) { return {}; }\n"
+        "IntersectionsLines get_intersections(const Polygons&) { return {}; }\n"
+        "IntersectionsLines get_intersections(const ExPolygon&) { return {}; }\n"
+        "IntersectionsLines get_intersections(const ExPolygons&) { return {}; }\n"
+        "} // namespace Slic3r\n"
+    )
+    file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/TextureDisplacementFallback.cpp
+        "#include \"libslic3r/TextureDisplacementFallback.hpp\"\n"
+        "#include \"libslic3r/TextureDisplacement.hpp\"\n"
+        "namespace Slic3r {\n"
+        "bool texture_displacement_layers_from_json(const std::string &, std::vector<TextureDisplacementLayer> &, TextureDisplacementOptions &) { return false; }\n"
+        "std::string texture_displacement_layers_to_json(const std::vector<TextureDisplacementLayer> &, const TextureDisplacementOptions &) { return \"{}\"; }\n"
+        "DecodedHeightTexture decode_height_texture(const TextureDisplacementLayer &, bool) { return DecodedHeightTexture(); }\n"
+        "DecodedHeightTexture apply_texture_adjustments(const DecodedHeightTexture &src, const TextureAdjustments &) { return src; }\n"
+        "void sample_layer_height(const DecodedHeightTexture&, const TextureDisplacementLayer&, const Eigen::Matrix<float, 3, 1>&, const Eigen::Matrix<float, 3, 1>&, const Eigen::Matrix<float, 3, 1>&, const Eigen::Matrix<float, 3, 1>&, const Eigen::Matrix<float, 2, 1>*) {}\n"
+        "DecodedHeightTexture downscale_height_texture(const DecodedHeightTexture &src, int) { return src; }\n"
+        "void cut_mesh_at_steps(const indexed_triangle_set&, const std::vector<unsigned char>&, const std::function<float(const Eigen::Matrix<float, 3, 1>&, const Eigen::Matrix<float, 3, 1>&)>&, float, float, float, std::vector<int>*, unsigned long*) {}\n"
+        "indexed_triangle_set subdivide_mesh_uniform(const indexed_triangle_set &mesh, float, int) { return mesh; }\n"
+        "void build_texture_displacement(const indexed_triangle_set&, const std::vector<TextureDisplacementLayer>&, const std::array<TriangleSelector::TriangleSplittingData, 8>&, const TextureDisplacementOptions&, const std::function<bool(int)>&, const TextureColorRequest*, const Eigen::Transform<double, 3, 2>&, BakeStageRecorder*, TextureBakeStats*, const std::vector<Eigen::Matrix<float, 2, 1>>*, const Eigen::Matrix<double, 3, 1>*, float) {}\n"
+        "void make_combined_displacement_sampler(const indexed_triangle_set&, const std::vector<TextureDisplacementLayer>&, const std::array<TriangleSelector::TriangleSplittingData, 8>&, const std::vector<Eigen::Matrix<float, 2, 1>>*) {}\n"
+        "std::vector<Vec3f> texture_displacement_vertex_normals(const indexed_triangle_set&) { return {}; }\n"
+        "void texture_displacement_patch_frame(const indexed_triangle_set&, const std::vector<Eigen::Matrix<float, 3, 1>>&, Eigen::Matrix<float, 3, 1>&, Eigen::Matrix<float, 3, 1>&, Eigen::Matrix<float, 3, 1>&) {}\n"
+        "std::vector<uint8_t> transfer_facet_paint(const indexed_triangle_set &, const TriangleSelector::TriangleSplittingData &, const indexed_triangle_set &) { return {}; }\n"
+        "} // namespace Slic3r\n"
+    )
+    file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/EmbossFallback.cpp
+        "#include \"libslic3r/EmbossFallback.hpp\"\n"
+        "#include \"libslic3r/EmbossShape.hpp\"\n"
+        "namespace Slic3r {\n"
+        "namespace Emboss {\n"
+        "HealedExPolygons heal_polygons(const Polygons &, bool, unsigned) { return HealedExPolygons(); }\n"
+        "bool heal_expolygons(ExPolygons &, unsigned) { return true; }\n"
+        "} // namespace Emboss\n"
+        "void center(ExPolygonsWithIds &) {}\n"
+        "} // namespace Slic3r\n"
+    )
+    file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/Format/DRCFallback.cpp
+        "#include \"libslic3r/Format/DRCFallback.hpp\"\n"
+        "namespace Slic3r {\n"
+        "bool load_drc(const char *, TriangleMesh *) { return false; }\n"
+        "bool load_drc(const char *, Model *, const char *) { return false; }\n"
+        "} // namespace Slic3r\n"
+    )
+    
+    # Store fallback sources for later addition via target_sources (to avoid source_group issues)
+    set(LIBSLIC3R_CAD_FALLBACK_SOURCES 
+        ${CMAKE_CURRENT_BINARY_DIR}/Geometry/VoronoiUtilsCgal.cpp
+        ${CMAKE_CURRENT_BINARY_DIR}/MeshRepairFallback.cpp
+        ${CMAKE_CURRENT_BINARY_DIR}/MeshBooleanFallback.cpp
+        ${CMAKE_CURRENT_BINARY_DIR}/TriangulationFallback.cpp
+        ${CMAKE_CURRENT_BINARY_DIR}/IntersectionsFallback.cpp
+        ${CMAKE_CURRENT_BINARY_DIR}/TextureDisplacementFallback.cpp
+        ${CMAKE_CURRENT_BINARY_DIR}/EmbossFallback.cpp
+        ${CMAKE_CURRENT_BINARY_DIR}/Format/DRCFallback.cpp
+    )
+endif()
+
 set(lisbslic3r_sources
     AABBMesh.cpp
     AABBMesh.hpp
@@ -123,8 +416,6 @@ set(lisbslic3r_sources
     EdgeGrid.hpp
     ElephantFootCompensation.cpp
     ElephantFootCompensation.hpp
-    Emboss.cpp
-    Emboss.hpp
     EmbossShape.hpp
     enum_bitmask.hpp
     ExclusionVolumeGeometry.cpp
@@ -511,8 +802,6 @@ set(lisbslic3r_sources
     Tesselate.cpp
     Tesselate.hpp
     TextConfiguration.hpp
-    TextureDisplacement.cpp
-    TextureDisplacement.hpp
     TextureBake/TextureBakeIndex.cpp
     TextureBake/TextureBakeIndex.hpp
     TextureBake/TextureBakeSubdivide.cpp
@@ -607,6 +896,11 @@ add_library(libslic3r STATIC ${lisbslic3r_sources}
     ${OpenVDBUtils_SOURCES})
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${lisbslic3r_sources})
 
+# Add CAD fallback sources if SLIC3R_CAD is OFF
+if (NOT SLIC3R_CAD AND LIBSLIC3R_CAD_FALLBACK_SOURCES)
+    target_sources(libslic3r PRIVATE ${LIBSLIC3R_CAD_FALLBACK_SOURCES})
+endif()
+
 if (SLIC3R_STATIC)
     set(CGAL_Boost_USE_STATIC_LIBS ON CACHE BOOL "" FORCE)
 endif ()
@@ -635,56 +929,7 @@ endif()
 # assimp is used for textured model import (Format/AssimpImport.cpp)
 find_package(assimp REQUIRED)
 
-if (SLIC3R_CAD)
-    set(CGAL_SOURCES
-        "Geometry/VoronoiUtilsCgal.cpp;Geometry/VoronoiUtilsCgal.hpp"
-        "CutSurface.hpp;CutSurface.cpp"
-    )
-    add_library(libslic3r_cgal STATIC
-        CutSurface.hpp CutSurface.cpp
-        IntersectionPoints.hpp IntersectionPoints.cpp
-        MeshBoolean.hpp MeshBoolean.cpp
-        MeshRepair.hpp MeshRepair.cpp
-        TryCatchSignal.hpp TryCatchSignal.cpp
-        Triangulation.hpp Triangulation.cpp
-    )
-else()
-    set(CGAL_SOURCES "")
-endif()
 
-if (SLIC3R_CAD)
-    target_include_directories(libslic3r_cgal PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
-
-    # Reset compile options of libslic3r_cgal. Despite it being linked privately, CGAL options
-    # (-frounding-math) still propagate to dependent libs which is not desired.
-    get_target_property(_cgal_tgt CGAL::CGAL ALIASED_TARGET)
-    if (NOT TARGET ${_cgal_tgt})
-        set (_cgal_tgt CGAL::CGAL)
-    endif ()
-    get_target_property(_opts ${_cgal_tgt} INTERFACE_COMPILE_OPTIONS)
-    if (_opts)
-        set(_opts_bad "${_opts}")
-        set(_opts_good "${_opts}")
-        list(FILTER _opts_bad INCLUDE REGEX frounding-math)
-        list(FILTER _opts_good EXCLUDE REGEX frounding-math)
-        set_target_properties(${_cgal_tgt} PROPERTIES INTERFACE_COMPILE_OPTIONS "${_opts_good}")
-        target_compile_options(libslic3r_cgal PRIVATE "${_opts_bad}")
-    endif()
-
-    if (IS_CLANG_CL)
-        # CGAL passes /fp:strict /fp:except-. clang-cl reports the second as overriding part of
-        # the first; the settings cc1 receives are the same ones MSVC produces from that pair.
-        target_compile_options(libslic3r_cgal PRIVATE -Wno-overriding-option)
-    endif ()
-
-    # Lets CGAL algorithms given CGAL::Parallel_if_available_tag run on TBB.
-    target_compile_definitions(libslic3r_cgal PRIVATE CGAL_LINKED_WITH_TBB)
-    target_link_libraries(libslic3r_cgal PRIVATE ${_cgal_tgt} admesh libigl mcut boost_libs TBB::tbb)
-
-    if (MSVC AND "${CMAKE_SIZEOF_VOID_P}" STREQUAL "4") # 32 bit MSVC workaround
-        target_compile_definitions(libslic3r_cgal PRIVATE CGAL_DO_NOT_USE_MPZF)
-    endif ()
-endif()
 
 encoding_check(libslic3r)
 

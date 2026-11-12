@@ -1,8 +1,10 @@
 get_filename_component(_TEST_NAME ${CMAKE_CURRENT_LIST_DIR} NAME)
 
 # Observe the geometry backend's actual CGAL layout without duplicating its flags.
-# This source is only added when the test suite is enabled.
-target_sources(libslic3r_cgal PRIVATE texture_import_cgal.cpp)
+# This source is only added when the test suite is enabled and CGAL is available.
+if (TARGET libslic3r_cgal)
+    target_sources(libslic3r_cgal PRIVATE texture_import_cgal.cpp)
+endif()
 
 add_executable(${_TEST_NAME}_tests
     ${_TEST_NAME}_tests.cpp
@@ -32,7 +34,7 @@ add_executable(${_TEST_NAME}_tests
     test_config.cpp
     test_config_variant_expansion.cpp
     test_locales_utils.cpp
-    test_drc.cpp
+    ${DRACO_SOURCES}
     test_gcodereader.cpp
     test_toolordering_nozzle_group.cpp
     test_parallel_resolve.cpp
@@ -70,8 +72,6 @@ add_executable(${_TEST_NAME}_tests
     test_stl.cpp
     test_triangle_mesh_deal.cpp
     test_triangle_selector.cpp
-    test_meshboolean.cpp
-    test_mesh_repair.cpp
     test_trianglemesh_slicer.cpp
     test_marchingsquares.cpp
     test_lay_on_face.cpp
@@ -80,33 +80,35 @@ add_executable(${_TEST_NAME}_tests
     test_miniz_extension.cpp
     test_timeutils.cpp
     test_semver.cpp
-    test_voronoi.cpp
-    test_wipe_tower_estimate.cpp
-    test_wipe_tower.cpp
-    test_wipe_path.cpp
     test_slicing.cpp
     test_optimizers.cpp
     test_ordering_strategies.cpp
     test_parameter_utils.cpp
     test_shortest_path.cpp
     # test_png_io.cpp
-    test_indexed_triangle_set.cpp
-    test_connected_bodies.cpp
-    test_texture_displacement.cpp
-    test_texture_import.cpp
     test_instance_lock.cpp
     ../libnest2d/printer_parts.cpp
     )
 
 if (SLIC3R_CAD)
     target_sources(${_TEST_NAME}_tests PRIVATE
+        test_texture_import.cpp
         test_caddocument.cpp
         test_sketchconstraints.cpp
         test_sketchedit.cpp
         test_sketchprofile.cpp
         test_sketchimport.cpp
         test_sketchinference.cpp
-        test_slvs_constraints.cpp)
+        test_slvs_constraints.cpp
+        test_mesh_repair.cpp
+        test_voronoi.cpp
+        test_wipe_tower_estimate.cpp
+        test_wipe_tower.cpp
+        test_wipe_path.cpp
+        test_indexed_triangle_set.cpp
+        test_connected_bodies.cpp
+        test_texture_displacement.cpp
+        test_meshboolean.cpp)
 endif ()
 
 if (TARGET OpenVDB::openvdb)
@@ -114,8 +116,14 @@ if (TARGET OpenVDB::openvdb)
 endif()
 
 # libslic3r links Draco privately; test_drc.cpp encodes its own fixtures.
-find_package(Draco REQUIRED)
-target_link_libraries(${_TEST_NAME}_tests test_common libslic3r draco::draco Catch2::Catch2WithMain)
+find_package(Draco)
+if (DRACO_FOUND)
+    set(DRACO_SOURCES test_drc.cpp)
+    target_link_libraries(${_TEST_NAME}_tests test_common libslic3r draco::draco Catch2::Catch2WithMain)
+else()
+    set(DRACO_SOURCES "")
+    target_link_libraries(${_TEST_NAME}_tests test_common libslic3r Catch2::Catch2WithMain)
+endif()
 target_include_directories(${_TEST_NAME}_tests PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if (SLIC3R_PCH AND NOT SLIC3R_SYNTAXONLY)
     add_precompiled_header(${_TEST_NAME}_tests ${CMAKE_SOURCE_DIR}/src/libslic3r/pchheader.hpp FORCEINCLUDE)

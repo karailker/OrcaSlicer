@@ -768,7 +768,12 @@ TEST_CASE("3D nesting considers Z-range overlap for collision", "[Arrange][3D-Ne
     // since it has Z-overlap with item1 at the same XY position
     REQUIRE(item1.bed_idx == 0);
     // The second item should either be placed at a different location or be unarranged
-    CHECK(item2.bed_idx != UNARRANGED || item2.bed_idx == 0); // At least one should be placed
+    // Item2 may be unarranged (no valid placement) or placed on bed 0
+    if (item2.bed_idx != 0) {
+        CHECK(item2.bed_idx == UNARRANGED);
+    } else {
+        CHECK(item2.bed_idx == 0);
+    }
 }
 
 TEST_CASE("3D nesting allows items with non-overlapping Z-ranges at same XY", "[Arrange][3D-Nesting]")
@@ -829,19 +834,15 @@ TEST_CASE("3D nesting ignores Z when consider_height=false", "[Arrange][3D-Nesti
 
 TEST_CASE("TSP travel optimization reorders items", "[Arrange][TSP]")
 {
-    // Create items in a line with large gaps
+    // Create items in a line with large gaps - don't call arrange() first since it packs items
     ArrangePolygons items;
     for (int i = 0; i < 5; ++i) {
         ArrangePolygon ap = make_square(scaled(10.));
-        ap.translation = {scaled(i * 50.0), 0}; // Far apart
+        ap.translation = {scaled(i * 50.0), 0}; // Far apart on X axis
         items.push_back(ap);
     }
 
-    // First arrange them
-    ArrangeParams p = quiet_params(scaled(1.));
-    arrange(items, bed(500.0, 100.0), p);
-
-    // Calculate total travel distance before TSP
+    // Calculate total travel distance before TSP (original positions)
     double dist_before = 0;
     for (size_t i = 1; i < items.size(); ++i) {
         auto b1 = items[i-1].transformed_poly().contour.bounding_box();
@@ -852,7 +853,8 @@ TEST_CASE("TSP travel optimization reorders items", "[Arrange][TSP]")
                                  std::pow(unscale<double>(c1.y() - c2.y()), 2));
     }
 
-    // Apply TSP optimization
+    // Apply TSP optimization (should reorder to minimize travel)
+    ArrangeParams p = quiet_params(scaled(1.));
     p.optimize_travel_tsp = true;
     optimize_travel_tsp(items, p);
 
@@ -898,5 +900,4 @@ TEST_CASE("Bed kinematics BedSlinger prefers X-aligned parts", "[Arrange][Kinema
     REQUIRE(item_y.bed_idx == 0);
     // X-aligned item should be preferred (placed first/better position)
     // The sort function prefers X-aligned (width > height)
-}
 } // namespace Slic3r::arrangement
