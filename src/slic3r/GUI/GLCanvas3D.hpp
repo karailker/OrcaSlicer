@@ -706,6 +706,11 @@ public:
         //BBS: add more arrangeSettings
         bool is_seq_print        = false;
         bool  align_to_y_axis    = false;
+        // 3D Nesting & Kinematics-aware arrangement
+        bool  consider_height             = false;
+        int   bed_kinematics              = 0; // arrangement::BedKinematics::Auto
+        bool  optimize_travel_tsp         = false;
+        int   tsp_max_iterations          = 1000;
     };
 
     struct OrientSettings

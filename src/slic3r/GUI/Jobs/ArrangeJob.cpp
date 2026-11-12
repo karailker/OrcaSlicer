@@ -774,6 +774,11 @@ void ArrangeJob::process(Ctl &ctl)
     arrangement::arrange(m_selected, m_unselected, bedpts, params);
     if (!ctl.was_canceled())
         imex.finish(m_selected, before, m_unselected, params);
+    
+    // TSP-based travel optimization
+    if (params.optimize_travel_tsp) {
+        arrangement::optimize_travel_tsp(m_selected, params);
+    }
 
     // sort by item id
     std::sort(m_selected.begin(), m_selected.end(), [](auto a, auto b) {return a.itemid < b.itemid; });
@@ -1008,6 +1013,14 @@ arrangement::ArrangeParams init_arrange_params(Plater *p)
     params.is_seq_print                        = settings.is_seq_print;
     params.min_obj_distance                    = scaled(settings.distance);
     params.align_to_y_axis                     = settings.align_to_y_axis;
+    
+    // 3D Nesting & Kinematics-aware arrangement
+    params.consider_height             = settings.consider_height;
+    params.extruder_clearance_radius   = print_config.extruder_clearance_radius.value;
+    params.bed_kinematics              = static_cast<arrangement::BedKinematics>(settings.bed_kinematics);
+    params.optimize_travel_tsp         = settings.optimize_travel_tsp;
+    params.tsp_max_iterations          = settings.tsp_max_iterations;
+
     if (print_config.belt_printer.value) {
         // Parts print in belt order: the belt runs across the gantry's tilt axis, a
         // rotation about X prints toward +Y and one about Y toward -X (see

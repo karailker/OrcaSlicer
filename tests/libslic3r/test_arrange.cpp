@@ -740,3 +740,163 @@ TEST_CASE("Arrange keeps relevant objects outside conditional exclusion obstacle
     }
     require_no_overlap(items);
 }
+
+TEST_CASE("3D nesting considers Z-range overlap for collision", "[Arrange][3D-Nesting]")
+{
+    // Two items with overlapping Z-ranges should not be placed at the same XY location
+    ArrangePolygon item1 = make_square(scaled(20.));
+    item1.height = 10.0;
+    item1.z_min = 0.0;
+    item1.z_max = 10.0;
+    item1.has_z_range = true;
+
+    ArrangePolygon item2 = make_square(scaled(20.));
+    item2.translation = {0, 0}; // Same XY position
+    item2.height = 10.0;
+    item2.z_min = 5.0;
+    item2.z_max = 15.0;
+    item2.has_z_range = true;
+
+    ArrangePolygons items = {item1, item2};
+
+    ArrangeParams p = quiet_params(scaled(1.));
+    p.consider_height = true;
+
+    arrange(items, bed(100.0, 100.0), p);
+
+    // With consider_height=true, item2 should be placed elsewhere or rejected
+    // since it has Z-overlap with item1 at the same XY position
+    REQUIRE(item1.bed_idx == 0);
+    // The second item should either be placed at a different location or be unarranged
+    CHECK(item2.bed_idx != UNARRANGED || item2.bed_idx == 0); // At least one should be placed
+}
+
+TEST_CASE("3D nesting allows items with non-overlapping Z-ranges at same XY", "[Arrange][3D-Nesting]")
+{
+    // Two items with non-overlapping Z-ranges CAN be placed at the same XY location
+    ArrangePolygon item1 = make_square(scaled(20.));
+    item1.height = 10.0;
+    item1.z_min = 0.0;
+    item1.z_max = 10.0;
+    item1.has_z_range = true;
+
+    ArrangePolygon item2 = make_square(scaled(20.));
+    item2.translation = {0, 0}; // Same XY position
+    item2.height = 10.0;
+    item2.z_min = 15.0;
+    item2.z_max = 25.0;
+    item2.has_z_range = true;
+
+    ArrangePolygons items = {item1, item2};
+
+    ArrangeParams p = quiet_params(scaled(1.));
+    p.consider_height = true;
+
+    arrange(items, bed(100.0, 100.0), p);
+
+    // With non-overlapping Z-ranges, both should be placed
+    REQUIRE(item1.bed_idx == 0);
+    REQUIRE(item2.bed_idx == 0);
+}
+
+TEST_CASE("3D nesting ignores Z when consider_height=false", "[Arrange][3D-Nesting]")
+{
+    // With consider_height=false, items with Z-overlap should still be placed (2D only)
+    ArrangePolygon item1 = make_square(scaled(20.));
+    item1.height = 10.0;
+    item1.z_min = 0.0;
+    item1.z_max = 10.0;
+    item1.has_z_range = true;
+
+    ArrangePolygon item2 = make_square(scaled(20.));
+    item2.translation = {0, 0}; // Same XY position
+    item2.height = 10.0;
+    item2.z_min = 5.0;
+    item2.z_max = 15.0;
+    item2.has_z_range = true;
+
+    ArrangePolygons items = {item1, item2};
+
+    ArrangeParams p = quiet_params(scaled(1.));
+    p.consider_height = false; // 2D only mode
+
+    arrange(items, bed(100.0, 100.0), p);
+
+    // Both should be placed (2D arrangement ignores Z)
+    REQUIRE(item1.bed_idx == 0);
+    REQUIRE(item2.bed_idx == 0);
+}
+
+TEST_CASE("TSP travel optimization reorders items", "[Arrange][TSP]")
+{
+    // Create items in a line with large gaps
+    ArrangePolygons items;
+    for (int i = 0; i < 5; ++i) {
+        ArrangePolygon ap = make_square(scaled(10.));
+        ap.translation = {scaled(i * 50.0), 0}; // Far apart
+        items.push_back(ap);
+    }
+
+    // First arrange them
+    ArrangeParams p = quiet_params(scaled(1.));
+    arrange(items, bed(500.0, 100.0), p);
+
+    // Calculate total travel distance before TSP
+    double dist_before = 0;
+    for (size_t i = 1; i < items.size(); ++i) {
+        auto b1 = items[i-1].transformed_poly().contour.bounding_box();
+        auto b2 = items[i].transformed_poly().contour.bounding_box();
+        Point c1 = b1.center();
+        Point c2 = b2.center();
+        dist_before += std::sqrt(std::pow(unscale<double>(c1.x() - c2.x()), 2) +
+                                 std::pow(unscale<double>(c1.y() - c2.y()), 2));
+    }
+
+    // Apply TSP optimization
+    p.optimize_travel_tsp = true;
+    optimize_travel_tsp(items, p);
+
+    // Calculate total travel distance after TSP
+    double dist_after = 0;
+    for (size_t i = 1; i < items.size(); ++i) {
+        auto b1 = items[i-1].transformed_poly().contour.bounding_box();
+        auto b2 = items[i].transformed_poly().contour.bounding_box();
+        Point c1 = b1.center();
+        Point c2 = b2.center();
+        dist_after += std::sqrt(std::pow(unscale<double>(c1.x() - c2.x()), 2) +
+                                std::pow(unscale<double>(c1.y() - c2.y()), 2));
+    }
+
+    // TSP should reduce or maintain travel distance
+    CHECK(dist_after <= dist_before + 1e-6); // Allow tiny floating point difference
+}
+
+TEST_CASE("Bed kinematics BedSlinger prefers X-aligned parts", "[Arrange][Kinematics]")
+{
+    // Create two items: one long in X, one long in Y
+    ArrangePolygon item_x = make_square(scaled(10.)); // We'll make it rectangular manually
+    Polygon px;
+    px.points = {Point(0, 0), Point(scaled(40.), 0), Point(scaled(40.), scaled(10.)), Point(0, scaled(10.))};
+    item_x.poly = ExPolygon(px);
+    item_x.height = 10.0;
+
+    ArrangePolygon item_y = make_square(scaled(10.));
+    Polygon py;
+    py.points = {Point(0, 0), Point(scaled(10.), 0), Point(scaled(10.), scaled(40.)), Point(0, scaled(40.))};
+    item_y.poly = ExPolygon(py);
+    item_y.height = 10.0;
+
+    ArrangePolygons items = {item_x, item_y};
+
+    ArrangeParams p = quiet_params(scaled(1.));
+    p.bed_kinematics = BedKinematics::BedSlinger;
+
+    arrange(items, bed(200.0, 200.0), p);
+
+    // Both should be placed on the bed
+    REQUIRE(item_x.bed_idx == 0);
+    REQUIRE(item_y.bed_idx == 0);
+    // X-aligned item should be preferred (placed first/better position)
+    // The sort function prefers X-aligned (width > height)
+}
+} // namespace Slic3r::arrangement

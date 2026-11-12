@@ -203,12 +203,7 @@ set(lisbslic3r_sources
     FilamentMixerModel.hpp
     ColorDecomposeRecipe.cpp
     ColorDecomposeRecipe.hpp
-    TexturePainting.hpp
-    TexturePainting.cpp
-    TextureToColor/TextureToColor.hpp
-    TextureToColor/TextureToColor.cpp
-    TextureToColor/ColorUtils.hpp
-    TextureToColor/ColorUtils.cpp
+    ${OPENCV_SOURCES}
     Flow.cpp
     Flow.hpp
     FlushVolCalc.cpp
@@ -221,8 +216,7 @@ set(lisbslic3r_sources
     Format/ImportNames.hpp
     Format/AssembleList.cpp
     Format/AssembleList.hpp
-    Format/DRC.cpp
-    Format/DRC.hpp
+    ${DRACO_SOURCES}
     Format/bbs_3mf.cpp
     Format/bbs_3mf.hpp
     Format/ProjectStrategy.hpp
@@ -333,8 +327,7 @@ set(lisbslic3r_sources
     Geometry/Voronoi.hpp
     Geometry/VoronoiOffset.cpp
     Geometry/VoronoiOffset.hpp
-    Geometry/VoronoiUtilsCgal.cpp
-    Geometry/VoronoiUtilsCgal.hpp
+    ${CGAL_SOURCES}
     Geometry/VoronoiUtils.cpp
     Geometry/VoronoiUtils.hpp
     Geometry/VoronoiVisualUtils.hpp
@@ -386,8 +379,7 @@ set(lisbslic3r_sources
     NormalUtils.hpp
     NSVGUtils.cpp
     NSVGUtils.hpp
-    ObjColorUtils.cpp
-    ObjColorUtils.hpp
+    ${OPENCV_SOURCES}
     ObjectID.cpp
     ObjectID.hpp
     Optimize/BruteforceOptimizer.hpp
@@ -455,8 +447,7 @@ set(lisbslic3r_sources
     SLA/ConcaveHull.cpp
     SLA/ConcaveHull.hpp
     SLA/Concurrency.hpp
-    SLA/Hollowing.cpp
-    SLA/Hollowing.hpp
+    ${OPENVDB_SOURCES}
     SLA/IndexedMesh.cpp
     SLA/IndexedMesh.hpp
     SLA/JobController.hpp
@@ -621,67 +612,95 @@ if (SLIC3R_STATIC)
 endif ()
 set(CGAL_DO_NOT_WARN_ABOUT_CMAKE_BUILD_TYPE ON CACHE BOOL "" FORCE)
 
-cmake_policy(PUSH)
-cmake_policy(SET CMP0011 NEW)
-# CGAL's config resets policies (cmake_minimum_required ...3.31), so a plain SET
-# can't reach it; the default opts its Boost lookup into BoostConfig (CMP0167).
-set(CMAKE_POLICY_DEFAULT_CMP0167 NEW)
-find_package(CGAL 6.2 REQUIRED)
-find_package(OpenCV REQUIRED core)
-find_package(assimp REQUIRED)
-unset(CMAKE_POLICY_DEFAULT_CMP0167)
-cmake_policy(POP)
-
-add_library(libslic3r_cgal STATIC
-    CutSurface.hpp CutSurface.cpp
-    IntersectionPoints.hpp IntersectionPoints.cpp
-    MeshBoolean.hpp MeshBoolean.cpp
-    MeshRepair.hpp MeshRepair.cpp
-    TryCatchSignal.hpp TryCatchSignal.cpp
-    Triangulation.hpp Triangulation.cpp
-)
-target_include_directories(libslic3r_cgal PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
-
-# Reset compile options of libslic3r_cgal. Despite it being linked privately, CGAL options
-# (-frounding-math) still propagate to dependent libs which is not desired.
-get_target_property(_cgal_tgt CGAL::CGAL ALIASED_TARGET)
-if (NOT TARGET ${_cgal_tgt})
-    set (_cgal_tgt CGAL::CGAL)
-endif ()
-get_target_property(_opts ${_cgal_tgt} INTERFACE_COMPILE_OPTIONS)
-if (_opts)
-    set(_opts_bad "${_opts}")
-    set(_opts_good "${_opts}")
-    list(FILTER _opts_bad INCLUDE REGEX frounding-math)
-    list(FILTER _opts_good EXCLUDE REGEX frounding-math)
-    set_target_properties(${_cgal_tgt} PROPERTIES INTERFACE_COMPILE_OPTIONS "${_opts_good}")
-    target_compile_options(libslic3r_cgal PRIVATE "${_opts_bad}")
+if (SLIC3R_CAD)
+    cmake_policy(PUSH)
+    cmake_policy(SET CMP0011 NEW)
+    # CGAL's config resets policies (cmake_minimum_required ...3.31), so a plain SET
+    # can't reach it; the default opts its Boost lookup into BoostConfig (CMP0167).
+    set(CMAKE_POLICY_DEFAULT_CMP0167 NEW)
+    find_package(CGAL 6.2 REQUIRED)
+    find_package(OpenCV REQUIRED core)
+    unset(CMAKE_POLICY_DEFAULT_CMP0167)
+    cmake_policy(POP)
+    set(OPENCV_SOURCES 
+        "TexturePainting.hpp;TexturePainting.cpp"
+        "TextureToColor/TextureToColor.hpp;TextureToColor/TextureToColor.cpp"
+        "TextureToColor/ColorUtils.hpp;TextureToColor/ColorUtils.cpp"
+        "ObjColorUtils.cpp;ObjColorUtils.hpp"
+    )
+else()
+    set(OPENCV_SOURCES "")
 endif()
 
-if (IS_CLANG_CL)
-    # CGAL passes /fp:strict /fp:except-. clang-cl reports the second as overriding part of
-    # the first; the settings cc1 receives are the same ones MSVC produces from that pair.
-    target_compile_options(libslic3r_cgal PRIVATE -Wno-overriding-option)
-endif ()
+# assimp is used for textured model import (Format/AssimpImport.cpp)
+find_package(assimp REQUIRED)
 
-# Lets CGAL algorithms given CGAL::Parallel_if_available_tag run on TBB.
-target_compile_definitions(libslic3r_cgal PRIVATE CGAL_LINKED_WITH_TBB)
-target_link_libraries(libslic3r_cgal PRIVATE ${_cgal_tgt} admesh libigl mcut boost_libs TBB::tbb)
+if (SLIC3R_CAD)
+    set(CGAL_SOURCES
+        "Geometry/VoronoiUtilsCgal.cpp;Geometry/VoronoiUtilsCgal.hpp"
+        "CutSurface.hpp;CutSurface.cpp"
+    )
+    add_library(libslic3r_cgal STATIC
+        CutSurface.hpp CutSurface.cpp
+        IntersectionPoints.hpp IntersectionPoints.cpp
+        MeshBoolean.hpp MeshBoolean.cpp
+        MeshRepair.hpp MeshRepair.cpp
+        TryCatchSignal.hpp TryCatchSignal.cpp
+        Triangulation.hpp Triangulation.cpp
+    )
+else()
+    set(CGAL_SOURCES "")
+endif()
 
-if (MSVC AND "${CMAKE_SIZEOF_VOID_P}" STREQUAL "4") # 32 bit MSVC workaround
-    target_compile_definitions(libslic3r_cgal PRIVATE CGAL_DO_NOT_USE_MPZF)
-endif ()
+if (SLIC3R_CAD)
+    target_include_directories(libslic3r_cgal PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+
+    # Reset compile options of libslic3r_cgal. Despite it being linked privately, CGAL options
+    # (-frounding-math) still propagate to dependent libs which is not desired.
+    get_target_property(_cgal_tgt CGAL::CGAL ALIASED_TARGET)
+    if (NOT TARGET ${_cgal_tgt})
+        set (_cgal_tgt CGAL::CGAL)
+    endif ()
+    get_target_property(_opts ${_cgal_tgt} INTERFACE_COMPILE_OPTIONS)
+    if (_opts)
+        set(_opts_bad "${_opts}")
+        set(_opts_good "${_opts}")
+        list(FILTER _opts_bad INCLUDE REGEX frounding-math)
+        list(FILTER _opts_good EXCLUDE REGEX frounding-math)
+        set_target_properties(${_cgal_tgt} PROPERTIES INTERFACE_COMPILE_OPTIONS "${_opts_good}")
+        target_compile_options(libslic3r_cgal PRIVATE "${_opts_bad}")
+    endif()
+
+    if (IS_CLANG_CL)
+        # CGAL passes /fp:strict /fp:except-. clang-cl reports the second as overriding part of
+        # the first; the settings cc1 receives are the same ones MSVC produces from that pair.
+        target_compile_options(libslic3r_cgal PRIVATE -Wno-overriding-option)
+    endif ()
+
+    # Lets CGAL algorithms given CGAL::Parallel_if_available_tag run on TBB.
+    target_compile_definitions(libslic3r_cgal PRIVATE CGAL_LINKED_WITH_TBB)
+    target_link_libraries(libslic3r_cgal PRIVATE ${_cgal_tgt} admesh libigl mcut boost_libs TBB::tbb)
+
+    if (MSVC AND "${CMAKE_SIZEOF_VOID_P}" STREQUAL "4") # 32 bit MSVC workaround
+        target_compile_definitions(libslic3r_cgal PRIVATE CGAL_DO_NOT_USE_MPZF)
+    endif ()
+endif()
 
 encoding_check(libslic3r)
 
 target_compile_definitions(libslic3r PUBLIC -DUSE_TBB -DTBB_USE_CAPTURED_EXCEPTION=0)
-# CGAL changes Kd_tree's member layout when TBB is enabled. Match libslic3r_cgal
-# in every consumer so inline constructors/destructors cannot mix the two layouts.
-target_compile_definitions(libslic3r PUBLIC CGAL_LINKED_WITH_TBB)
+if (SLIC3R_CAD)
+    # CGAL changes Kd_tree's member layout when TBB is enabled. Match libslic3r_cgal
+    # in every consumer so inline constructors/destructors cannot mix the two layouts.
+    target_compile_definitions(libslic3r PUBLIC CGAL_LINKED_WITH_TBB)
+endif()
 if (USE_SLIC3R_CONSOLE_LOG)
     target_compile_definitions(libslic3r PRIVATE $<$<CONFIG:RelWithDebInfo>:SLIC3R_CONSOLE_LOG>)
 endif()
-target_include_directories(libslic3r PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/TextureToColor PUBLIC ${CMAKE_CURRENT_BINARY_DIR})
+target_include_directories(libslic3r PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} PUBLIC ${CMAKE_CURRENT_BINARY_DIR})
+if (SLIC3R_CAD)
+    target_include_directories(libslic3r PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/TextureToColor)
+endif()
 target_include_directories(libslic3r SYSTEM PUBLIC ${EXPAT_INCLUDE_DIRS})
 if (WIN32)
     # Expat is linked statically; upstream headers declare the API __declspec(dllimport)
@@ -695,7 +714,12 @@ find_package(OpenCASCADE REQUIRED)
 target_include_directories(libslic3r SYSTEM PUBLIC ${OpenCASCADE_INCLUDE_DIR})
 
 find_package(JPEG REQUIRED)
-find_package(Draco REQUIRED)
+find_package(Draco)
+if (DRACO_FOUND)
+    set(DRACO_SOURCES "Format/DRC.cpp;Format/DRC.hpp")
+else()
+    set(DRACO_SOURCES "")
+endif()
 
 # deps/OCCT/OCCT.cmake builds exactly these toolkits; keep its _occt_toolkits list in step.
 set(OCCT_LIBS
@@ -782,7 +806,7 @@ target_link_libraries(libslic3r
         libigl
         libnest2d
         miniz
-        opencv_world
+        ${OPENCV_TARGET}
         assimp::assimp
     PRIVATE
         ${CMAKE_DL_LIBS}
@@ -794,7 +818,7 @@ target_link_libraries(libslic3r
         draco::draco
         glu-libtess
         JPEG::JPEG
-        libslic3r_cgal
+        ${SLIC3R_CAD_LIBS}
         mcut
         noise::noise
         PNG::PNG
@@ -807,13 +831,31 @@ target_link_libraries(libslic3r
         OpenSSL::Crypto
     )
 
+if (SLIC3R_CAD)
+    set(SLIC3R_CAD_LIBS libslic3r_cgal)
+else()
+    set(SLIC3R_CAD_LIBS "")
+endif()
+
+if (DRACO_FOUND)
+    set(DRACO_TARGET draco::draco)
+else()
+    set(DRACO_TARGET "")
+endif()
+
+if (SLIC3R_CAD)
+    set(OPENCV_TARGET opencv_world)
+else()
+    set(OPENCV_TARGET "")
+endif()
+
 if (APPLE)
     find_library(FOUNDATION Foundation REQUIRED)
     find_library(MODELIO ModelIO REQUIRED)
     target_link_libraries(libslic3r PRIVATE ${FOUNDATION} ${MODELIO})
 endif ()
 
-if (TARGET OpenVDB::openvdb)
+if (SLIC3R_CAD AND TARGET OpenVDB::openvdb)
     target_link_libraries(libslic3r PRIVATE OpenVDB::openvdb)
 endif()
 

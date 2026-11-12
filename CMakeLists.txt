@@ -544,8 +544,10 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(THREADS_PREFER_PTHREAD_FLAG ON)
     find_package(Threads REQUIRED)
 
-    find_package(DBus REQUIRED)
-    include_directories(SYSTEM ${DBUS_INCLUDE_DIRS})
+    if (SLIC3R_GUI)
+        find_package(DBus REQUIRED)
+        include_directories(SYSTEM ${DBUS_INCLUDE_DIRS})
+    endif()
 endif()
 
 if (CMAKE_COMPILER_IS_GNUCC OR CMAKE_COMPILER_IS_GNUXX)
@@ -919,14 +921,16 @@ find_package(EXPAT 2.10.0 REQUIRED)
 
 find_package(PNG REQUIRED)
 
-set(OpenGL_GL_PREFERENCE "LEGACY")
-find_package(OpenGL REQUIRED)
+if (SLIC3R_GUI)
+    set(OpenGL_GL_PREFERENCE "LEGACY")
+    find_package(OpenGL REQUIRED)
 
-if(APPLE AND CMAKE_VERSION VERSION_GREATER_EQUAL "4.0")
-    set(OPENGL_LIBRARIES "-framework OpenGL" CACHE STRING "OpenGL framework" FORCE)
+    if(APPLE AND CMAKE_VERSION VERSION_GREATER_EQUAL "4.0")
+        set(OPENGL_LIBRARIES "-framework OpenGL" CACHE STRING "OpenGL framework" FORCE)
+    endif()
+
+    find_package(glfw3 REQUIRED)
 endif()
-
-find_package(glfw3 REQUIRED)
 
 # Find the Cereal serialization library
 find_package(cereal REQUIRED)
@@ -1060,20 +1064,22 @@ target_compile_definitions(pybind11_embed INTERFACE PYBIND11_SIMPLE_GIL_MANAGEME
 add_library(pybind11::embed ALIAS pybind11_embed)
 
 
-if(SLIC3R_STATIC)
-    set(OPENVDB_USE_STATIC_LIBS ON)
-    set(USE_BLOSC TRUE)
-endif ()
+if (SLIC3R_CAD)
+    if(SLIC3R_STATIC)
+        set(OPENVDB_USE_STATIC_LIBS ON)
+        set(USE_BLOSC TRUE)
+    endif ()
 
-find_package(OpenVDB 5.0 COMPONENTS openvdb)
-if(OpenVDB_FOUND)
-    slic3r_remap_configs(IlmBase::Half RelWithDebInfo Release)
-    slic3r_remap_configs(Blosc::blosc RelWithDebInfo Release)
-else ()
-    message(FATAL_ERROR "OpenVDB could not be found with the bundled find module. "
-                   "You can try to specify the find module location of your "
-                   "OpenVDB installation with the OPENVDB_FIND_MODULE_PATH cache variable.")
-endif ()
+    find_package(OpenVDB 5.0 COMPONENTS openvdb)
+    if(OpenVDB_FOUND)
+        slic3r_remap_configs(IlmBase::Half RelWithDebInfo Release)
+        slic3r_remap_configs(Blosc::blosc RelWithDebInfo Release)
+    else ()
+        message(FATAL_ERROR "OpenVDB could not be found with the bundled find module. "
+                       "You can try to specify the find module location of your "
+                       "OpenVDB installation with the OPENVDB_FIND_MODULE_PATH cache variable.")
+    endif ()
+endif()
 
 find_path(SPNAV_INCLUDE_DIR spnav.h)
 if (SPNAV_INCLUDE_DIR)
@@ -1180,41 +1186,36 @@ function(orcaslicer_copy_sos target config postfix output_sos)
         set(_out_dir "${CMAKE_CURRENT_BINARY_DIR}")
     endif ()
 
-    file(COPY ${CMAKE_PREFIX_PATH}/lib/libavformat.so
-            ${CMAKE_PREFIX_PATH}/lib/libavformat.so.61
-            ${CMAKE_PREFIX_PATH}/lib/libavformat.so.61.1.100
-            ${CMAKE_PREFIX_PATH}/lib/libavcodec.so
-            ${CMAKE_PREFIX_PATH}/lib/libavcodec.so.61
-            ${CMAKE_PREFIX_PATH}/lib/libavcodec.so.61.3.100
-            ${CMAKE_PREFIX_PATH}/lib/libavutil.so
-            ${CMAKE_PREFIX_PATH}/lib/libavutil.so.59
-            ${CMAKE_PREFIX_PATH}/lib/libavutil.so.59.8.100
-            ${CMAKE_PREFIX_PATH}/lib/libswscale.so
-            ${CMAKE_PREFIX_PATH}/lib/libswscale.so.8
-            ${CMAKE_PREFIX_PATH}/lib/libswscale.so.8.1.100
-            ${CMAKE_PREFIX_PATH}/lib/libswresample.so
-            ${CMAKE_PREFIX_PATH}/lib/libswresample.so.5
-            ${CMAKE_PREFIX_PATH}/lib/libswresample.so.5.1.100
-         DESTINATION ${_out_dir})
-
-    set(${output_sos}
-        ${_out_dir}/libavformat.so
-        ${_out_dir}/libavformat.so.61
-        ${_out_dir}/libavformat.so.61.1.100
-        ${_out_dir}/libavcodec.so
-        ${_out_dir}/libavcodec.so.61
-        ${_out_dir}/libavcodec.so.61.3.100
-        ${_out_dir}/libavutil.so
-        ${_out_dir}/libavutil.so.59
-        ${_out_dir}/libavutil.so.59.8.100
-        ${_out_dir}/libswscale.so
-        ${_out_dir}/libswscale.so.8
-        ${_out_dir}/libswscale.so.8.1.100
-        ${_out_dir}/libswresample.so
-        ${_out_dir}/libswresample.so.5
-        ${_out_dir}/libswresample.so.5.1.100
-        PARENT_SCOPE
+    # Only copy FFmpeg libs if they exist in the prefix
+    set(_ffmpeg_libs
+        "${CMAKE_PREFIX_PATH}/lib/libavformat.so"
+        "${CMAKE_PREFIX_PATH}/lib/libavformat.so.61"
+        "${CMAKE_PREFIX_PATH}/lib/libavformat.so.61.1.100"
+        "${CMAKE_PREFIX_PATH}/lib/libavcodec.so"
+        "${CMAKE_PREFIX_PATH}/lib/libavcodec.so.61"
+        "${CMAKE_PREFIX_PATH}/lib/libavcodec.so.61.3.100"
+        "${CMAKE_PREFIX_PATH}/lib/libavutil.so"
+        "${CMAKE_PREFIX_PATH}/lib/libavutil.so.59"
+        "${CMAKE_PREFIX_PATH}/lib/libavutil.so.59.8.100"
+        "${CMAKE_PREFIX_PATH}/lib/libswscale.so"
+        "${CMAKE_PREFIX_PATH}/lib/libswscale.so.8"
+        "${CMAKE_PREFIX_PATH}/lib/libswscale.so.8.1.100"
+        "${CMAKE_PREFIX_PATH}/lib/libswresample.so"
+        "${CMAKE_PREFIX_PATH}/lib/libswresample.so.5"
+        "${CMAKE_PREFIX_PATH}/lib/libswresample.so.5.1.100"
     )
+    set(_ffmpeg_libs_out "")
+    foreach(_lib ${_ffmpeg_libs})
+        if(EXISTS "${_lib}")
+            list(APPEND _ffmpeg_libs_out "${_lib}")
+        endif()
+    endforeach()
+    if(_ffmpeg_libs_out)
+        file(COPY ${_ffmpeg_libs_out} DESTINATION ${_out_dir})
+        set(${output_sos} ${_ffmpeg_libs_out} PARENT_SCOPE)
+    else()
+        set(${output_sos} "" PARENT_SCOPE)
+    endif()
 endfunction()
 
 # Bundled sources set their own warning flags, and a plain -Wall there means /Wall

@@ -22,6 +22,14 @@ class BoundingBox;
 
 namespace arrangement {
 
+enum class BedKinematics : uint8_t {
+    Auto        = 0,  // Auto-detect from printer_structure
+    BedSlinger  = 1,  // i3-style: bed moves in Y
+    CoreXY      = 2,  // CoreXY / H-Bot: gantry moves
+    Delta       = 3,  // Delta: 3 arms
+    Other       = 4   // Unknown / custom
+};
+
 /// A geometry abstraction for a circular print bed. Similarly to BoundingBox.
 class CircleBed {
     Point center_;
@@ -165,6 +173,13 @@ struct ArrangeParams {
     bool  belt_reversed   = false;
     float belt_tilt_slope = 1.f; // cot(belt tilt angle), 0 when the belt is not tilted
 
+    // 3D Nesting & Kinematics-aware arrangement
+    bool  consider_height             = false;          // Enable 3D collision checking (Z-overlap)
+    float extruder_clearance_radius   = 0.0f;           // Extruder clearance radius (mm) for sequential print
+    BedKinematics bed_kinematics      = BedKinematics::Auto; // Printer kinematics type
+    bool  optimize_travel_tsp         = false;          // Enable TSP-based travel optimization
+    int   tsp_max_iterations          = 1000;           // Max iterations for TSP solver
+
     ArrangePolygons excluded_regions;   // regions cant't be used
     ArrangePolygons nonprefered_regions; // regions can be used but not prefered
 
@@ -199,6 +214,10 @@ struct ArrangeParams {
         ret += "\"clearance_height_to_lid\":" + std::to_string(clearance_height_to_lid) + ",";
         ret += "\"clearance_radius\":" + std::to_string(clearance_radius) + ",";
         ret += "\"printable_height\":" + std::to_string(printable_height) + ",";
+        ret += "\"consider_height\":" + std::to_string(consider_height) + ",";
+        ret += "\"extruder_clearance_radius\":" + std::to_string(extruder_clearance_radius) + ",";
+        ret += "\"bed_kinematics\":" + std::to_string(static_cast<int>(bed_kinematics)) + ",";
+        ret += "\"optimize_travel_tsp\":" + std::to_string(optimize_travel_tsp) + ",";
         return ret;
     }
 
@@ -243,6 +262,9 @@ inline void arrange(ArrangePolygons &items, const BoundingBox &bed, const Arrang
 inline void arrange(ArrangePolygons &items, const CircleBed &bed, const ArrangeParams &params = {}) { arrange(items, {}, bed, params); }
 inline void arrange(ArrangePolygons &items, const Polygon &bed, const ArrangeParams &params = {}) { arrange(items, {}, bed, params); }
 inline void arrange(ArrangePolygons &items, const InfiniteBed &bed, const ArrangeParams &params = {}) { arrange(items, {}, bed, params); }
+
+// TSP-based travel optimization for arranged items
+void optimize_travel_tsp(ArrangePolygons &items, const ArrangeParams &params);
 
 }} // namespace Slic3r::arrangement
 

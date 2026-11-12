@@ -423,6 +423,12 @@ void fill_config(PConf& pcfg, const ArrangeParams &params) {
         itm.markAsFixedInBin(0);
         itm.inflate(scaled(-2. * EPSILON));
     }
+
+    // Kinematics-aware adjustments to placement configuration
+    if (params.bed_kinematics != BedKinematics::Auto) {
+        // Could adjust starting_point or other config based on kinematics
+        // For now, we'll handle kinematics in objfunc and sortfunc
+    }
 }
 
 // Apply penalty to object function result. This is used only when alignment
@@ -607,6 +613,28 @@ protected:
 
         // Calculate the full bounding box of the pile with the candidate item
         auto fullbb = sl::boundingBox(m_pilebb, ibb);
+
+        // 3D Z-overlap collision check for sequential printing / multi-height arrangement
+        if (params.consider_height && item.has_z_range) {
+            for (const Item& packed : m_items) {
+                if (!packed.has_z_range) continue;
+                // Check XY overlap first (broad phase)
+                auto intersect = ibb.intersection(packed.boundingBox());
+                if (!intersect.defined) continue;
+                // Check Z overlap
+                double item_min = item.z_min;
+                double item_max = item.z_max;
+                double packed_min = packed.z_min;
+                double packed_max = packed.z_max;
+                if (item_min > item_max) std::swap(item_min, item_max);
+                if (packed_min > packed_max) std::swap(packed_min, packed_max);
+                // Touching counts as collision for safety
+                if (item_max >= packed_min - EPSILON && packed_max >= item_min - EPSILON) {
+                    // Z-ranges overlap, apply large penalty
+                    return std::make_tuple(LARGE_COST_TO_REJECT * 2.0, fullbb);
+                }
+            }
+        }
 
         // The bounding box of the big items (they will accumulate in the center
         // of the pile
@@ -989,6 +1017,22 @@ public:
                                                                    i1.extrude_ids.front() < i2.extrude_ids.front();
             }
             else {
+                // Kinematics-aware sorting
+                if (params.bed_kinematics == BedKinematics::BedSlinger) {
+                    // Bed-slinger: prefer parts aligned to X-axis (long dimension along X)
+                    // to minimize Y-axis ringing
+                    auto get_long_axis = [](const Item& item) {
+                        auto bb = item.boundingBox();
+                        return bb.width() > bb.height() ? 0 : 1; // 0=X, 1=Y
+                    };
+                    int a1 = get_long_axis(i1);
+                    int a2 = get_long_axis(i2);
+                    if (a1 != a2) return a1 < a2; // prefer X-aligned
+                }
+                else if (params.bed_kinematics == BedKinematics::CoreXY) {
+                    // CoreXY: align to fan flow direction if known
+                    // For now, just use area-based sorting
+                }
                 return i1.bed_temp != i2.bed_temp ? (i1.bed_temp > i2.bed_temp) :
                     (i1.extrude_ids != i2.extrude_ids ? (i1.extrude_ids.front() < i2.extrude_ids.front()) : (i1.area() > i2.area()));
             }
@@ -1340,6 +1384,62 @@ template void arrange(ArrangePolygons &items, const ArrangePolygons &excludes, c
 template void arrange(ArrangePolygons &items, const ArrangePolygons &excludes, const CircleBed &bed, const ArrangeParams &params);
 template void arrange(ArrangePolygons &items, const ArrangePolygons &excludes, const Polygon &bed, const ArrangeParams &params);
 template void arrange(ArrangePolygons &items, const ArrangePolygons &excludes, const InfiniteBed &bed, const ArrangeParams &params);
+
+// TSP-based travel optimization for arranged items
+// Reorders items to minimize total travel distance between them
+void optimize_travel_tsp(ArrangePolygons &items, const ArrangeParams &params) {
+    if (!params.optimize_travel_tsp || items.size() < 2) return;
+
+    size_t n = items.size();
+    if (n > 50) return; // TSP is O(n^2 * 2^n), limit to reasonable size
+
+    // Build distance matrix using item centers
+    std::vector<std::vector<double>> dist(n, std::vector<double>(n, 0.0));
+    for (size_t i = 0; i < n; ++i) {
+        auto ibb = items[i].poly.contour.bounding_box();
+        Point ic = ibb.center();
+        ic = {coord_t(ic.x() + items[i].translation.x()), coord_t(ic.y() + items[i].translation.y())};
+        for (size_t j = i + 1; j < n; ++j) {
+            auto jbb = items[j].poly.contour.bounding_box();
+            Point jc = jbb.center();
+            jc = {coord_t(jc.x() + items[j].translation.x()), coord_t(jc.y() + items[j].translation.y())};
+            double d = std::sqrt(std::pow(unscale<double>(ic.x() - jc.x()), 2) + 
+                                  std::pow(unscale<double>(ic.y() - jc.y()), 2));
+            dist[i][j] = dist[j][i] = d;
+        }
+    }
+
+    // Nearest neighbor heuristic for TSP (fast, good enough for this use case)
+    std::vector<bool> visited(n, false);
+    std::vector<size_t> order;
+    order.reserve(n);
+
+    size_t current = 0;
+    visited[current] = true;
+    order.push_back(current);
+
+    for (size_t k = 1; k < n; ++k) {
+        double best_dist = std::numeric_limits<double>::max();
+        size_t best_idx = current;
+        for (size_t j = 0; j < n; ++j) {
+            if (!visited[j] && dist[current][j] < best_dist) {
+                best_dist = dist[current][j];
+                best_idx = j;
+            }
+        }
+        current = best_idx;
+        visited[current] = true;
+        order.push_back(current);
+    }
+
+    // Apply reordering
+    ArrangePolygons reordered;
+    reordered.reserve(n);
+    for (size_t idx : order) {
+        reordered.push_back(items[idx]);
+    }
+    items = std::move(reordered);
+}
 
 } // namespace arr
 } // namespace Slic3r
